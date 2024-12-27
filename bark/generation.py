@@ -387,12 +387,17 @@ def generate_text_semantic(
     use_kv_caching=False,
 ):
     """Generate semantic tokens from text."""
+    # Ensure the input text is a string
     assert isinstance(text, str)
+    # Normalize whitespace in the text
     text = _normalize_whitespace(text)
+    # Ensure the text is not empty
     assert len(text.strip()) > 0
     if history_prompt is not None:
+        # Load history prompt if provided
         history_prompt = _load_history_prompt(history_prompt)
         semantic_history = history_prompt["semantic_prompt"]
+        # Validate semantic_history array
         assert (
             isinstance(semantic_history, np.ndarray)
             and len(semantic_history.shape) == 1
@@ -402,7 +407,7 @@ def generate_text_semantic(
         )
     else:
         semantic_history = None
-    # load models if not yet exist
+    # Load models if not already loaded
     global models
     global models_devices
     if "text" not in models:
@@ -410,14 +415,18 @@ def generate_text_semantic(
     model_container = models["text"]
     model = model_container["model"]
     tokenizer = model_container["tokenizer"]
+    # Tokenize the input text and adjust encoding
     encoded_text = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
     if OFFLOAD_CPU:
+        # Offload model to specified device
         model.to(models_devices["text"])
     device = next(model.parameters()).device
     if len(encoded_text) > 256:
+        # Trim encoded text if it's too long
         p = round((len(encoded_text) - 256) / len(encoded_text) * 100, 1)
         logger.warning(f"warning, text too long, lopping of last {p}%")
         encoded_text = encoded_text[:256]
+    # Pad encoded text to fixed length
     encoded_text = np.pad(
         encoded_text,
         (0, 256 - len(encoded_text)),
@@ -426,7 +435,7 @@ def generate_text_semantic(
     )
     if semantic_history is not None:
         semantic_history = semantic_history.astype(np.int64)
-        # lop off if history is too long, pad if needed
+        # Truncate or pad semantic history to fixed length
         semantic_history = semantic_history[-256:]
         semantic_history = np.pad(
             semantic_history,
@@ -435,36 +444,43 @@ def generate_text_semantic(
             mode="constant",
         )
     else:
+        # Initialize semantic history with padding tokens
         semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
+    # Combine encoded text, semantic history, and inference token
     x = torch.from_numpy(
         np.hstack([
             encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])
         ]).astype(np.int64)
     )[None]
+    # Ensure the input tensor has the correct shape
     assert x.shape[1] == 256 + 256 + 1
     with _inference_mode():
         x = x.to(device)
         n_tot_steps = 768
-        # custom tqdm updates since we don't know when eos will occur
+        # Initialize progress bar
         pbar = tqdm.tqdm(disable=silent, total=n_tot_steps)
         pbar_state = 0
         tot_generated_duration_s = 0
         kv_cache = None
         for n in range(n_tot_steps):
             if use_kv_caching and kv_cache is not None:
+                # Use cached key-value pairs for faster inference
                 x_input = x[:, [-1]]
             else:
                 x_input = x
+            # Get logits and update cache
             logits, kv_cache = model(
                 x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
             )
+            # Extract relevant logits for semantic vocabulary
             relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
             if allow_early_stop:
+                # Append eos token logits for early stopping
                 relevant_logits = torch.hstack(
                     (relevant_logits, logits[0, 0, [SEMANTIC_PAD_TOKEN]])  # eos
                 )
             if top_p is not None:
-                # faster to convert to numpy
+                # Apply top-p (nucleus) sampling
                 original_device = relevant_logits.device
                 relevant_logits = relevant_logits.detach().cpu().type(torch.float32).numpy()
                 sorted_indices = np.argsort(relevant_logits)[::-1]
@@ -477,25 +493,32 @@ def generate_text_semantic(
                 relevant_logits = torch.from_numpy(relevant_logits)
                 relevant_logits = relevant_logits.to(original_device)
             if top_k is not None:
+                # Apply top-k sampling
                 v, _ = torch.topk(relevant_logits, min(top_k, relevant_logits.size(-1)))
                 relevant_logits[relevant_logits < v[-1]] = -float("Inf")
+            # Compute probabilities
             probs = F.softmax(relevant_logits / temp, dim=-1)
+            # Sample the next token
             item_next = torch.multinomial(probs, num_samples=1).to(torch.int32)
             if allow_early_stop and (
                 item_next == SEMANTIC_VOCAB_SIZE
                 or (min_eos_p is not None and probs[-1] >= min_eos_p)
             ):
-                # eos found, so break
+                # Early stop if eos token is generated or probability threshold met
                 pbar.update(n - pbar_state)
                 break
+            # Append the new token to the sequence
             x = torch.cat((x, item_next[None]), dim=1)
             tot_generated_duration_s += 1 / SEMANTIC_RATE_HZ
             if max_gen_duration_s is not None and tot_generated_duration_s > max_gen_duration_s:
+                # Stop generation if maximum duration is exceeded
                 pbar.update(n - pbar_state)
                 break
             if n == n_tot_steps - 1:
+                # Update progress bar at the last step
                 pbar.update(n - pbar_state)
                 break
+            # Clean up unnecessary variables
             del logits, relevant_logits, probs, item_next
 
             if n > pbar_state:
@@ -503,14 +526,20 @@ def generate_text_semantic(
                     pbar.total = n
                 pbar.update(n - pbar_state)
             pbar_state = n
+        # Finalize progress bar
         pbar.total = n
         pbar.refresh()
         pbar.close()
+        # Extract generated tokens from the sequence
         out = x.detach().cpu().numpy().squeeze()[256 + 256 + 1 :]
     if OFFLOAD_CPU:
+        # Move model back to CPU if it was offloaded
         model.to("cpu")
+    # Ensure all output tokens are within the valid vocabulary range
     assert all(0 <= out) and all(out < SEMANTIC_VOCAB_SIZE)
+    # Clear CUDA cache to free up memory
     _clear_cuda_cache()
+    # Return the generated semantic tokens
     return out
 
 
