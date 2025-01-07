@@ -50,18 +50,29 @@ def train(epochs, model, dataloader, optimizer, criterion):
         print(f"Epoch {epoch}: Avg loss = {total_loss/len(dataloader)}")
 
 
-            
+from datasets import load_dataset
+    
+def train_with_hf_dataset(
+    hf_repo_id: str,
+    batch_size: int = 2,
+    epochs: int = 10,
+    learning_rate: float = 3e-4
+):
+    # Load dataset from HuggingFace Hub
+    dataset = load_dataset(hf_repo_id)
 
-if __name__ == "__main__":
+    # Assuming the dataset has a 'train' split
+    train_dataset = dataset['train']
 
-    audio_files, text_files = get_dataset()
+    # Define a DataLoader
+    dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn
+    )
 
-    texts = (open(f).read() for f in text_files)
-
-    dataset = BarkDataset(audio_files, texts)
-
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
-
+    # Initialize model configuration
     config = GPTConfig()
     config.n_layer = 12
     config.n_head = 12
@@ -72,13 +83,23 @@ if __name__ == "__main__":
     config.dropout = 0.0
     config.bias = True
 
+    # Initialize model, optimizer, and loss function
     model = GPT(config)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss()
 
-    epochs = 10
-
-
+    # Training loop
     train(epochs, model, dataloader, optimizer, criterion)
 
-    torch.save(model.state_dict(), "audio_train.pt")
+    # Save the trained model
+    torch.save(model.state_dict(), "audio_train_hf.pt")
+
+if __name__ == "__main__":
+
+    # Train the model with the dataset
+    train_with_hf_dataset(
+        hf_repo_id="pkd/pst-audio",
+        batch_size=2,
+        epochs=10,
+        learning_rate=3e-4
+    )

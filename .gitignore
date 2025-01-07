@@ -1,3 +1,5 @@
 __pycache__/
 suno_bark.egg-info/
 data/
+bark/prepared_dataset
+

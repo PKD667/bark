@@ -23,7 +23,11 @@ def get_dataset():
             # if file doesnt exist, download audio from urlS3
             audio_file = "../data/" + data["magnetothequeId"] + ".mp3"
             if not os.path.exists(audio_file):
-                url = data["urlS3"]
+                try:
+                    url = data["urlS3"]
+                except KeyError:
+                    print(f"no urlS3 for {data['magnetothequeId']}")
+                    continue
                 r = requests.get(url, allow_redirects=True)
                 open(audio_file, 'wb').write(r.content)
 
